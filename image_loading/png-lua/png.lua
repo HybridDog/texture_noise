@@ -258,7 +258,7 @@ local function getPixels(stream, width, height, depth, colour_type, palette,
     for y = 1, height do
         local filter_type = readByte(stream)
         local scanline = stream:readBytes(scanline_len)
-        applyFilter(filter_type, scanline_bpp, scanline, scanline_prev)
+        applyFilter(filter_type, scanline_bpp, scanline_prev, scanline)
         scanline_prev = scanline
         local pixel_row = getPixelRow(scanline, depth, colour_type, palette)
         if prog_callback then
