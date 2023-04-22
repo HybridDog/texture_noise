@@ -93,6 +93,7 @@ local function getDataPLTE(stream, length)
     data["numColors"] = math.floor(length/3)
     data["colors"] = {}
     for i = 1, data["numColors"] do
+        -- palette colours are always 8-bit RGB
         data.colors[i] = {
             R = readByte(stream),
             G = readByte(stream),
@@ -126,47 +127,6 @@ local function extractChunkData(stream)
     return chunkData
 end
 
-local function makePixel(stream, depth, colorType, palette)
-    local bps = math.floor(depth/8) --bits per sample
-    local pixelData = { R = 0, G = 0, B = 0, A = 0 }
-    local grey
-    local index
-    local color 
-
-    if colorType == 0 then
-        grey = readInt(stream, bps)
-        pixelData.R = grey
-        pixelData.G = grey
-        pixelData.B = grey
-        pixelData.A = 255
-    elseif colorType == 2 then
-        pixelData.R = readInt(stream, bps)
-        pixelData.G = readInt(stream, bps)
-        pixelData.B = readInt(stream, bps)
-        pixelData.A = 255
-    elseif colorType == 3 then
-        index = readInt(stream, bps)+1
-        color = palette.colors[index]
-        pixelData.R = color.R
-        pixelData.G = color.G
-        pixelData.B = color.B
-        pixelData.A = 255
-    elseif colorType == 4 then
-        grey = readInt(stream, bps)
-        pixelData.R = grey
-        pixelData.G = grey
-        pixelData.B = grey
-        pixelData.A = readInt(stream, bps)
-    elseif colorType == 6 then
-        pixelData.R = readInt(stream, bps)
-        pixelData.G = readInt(stream, bps)
-        pixelData.B = readInt(stream, bps)
-        pixelData.A = readInt(stream, bps)
-    end
-
-    return pixelData
-end
-
 local function bitFromColorType(colorType)
     if colorType == 0 then return 1 end
     if colorType == 2 then return 3 end
@@ -182,57 +142,132 @@ local function paethPredict(a, b, c)
     local varB = math.abs(p - b)
     local varC = math.abs(p - c)
 
-    if varA <= varB and varA <= varC then 
-        return a 
-    elseif varB <= varC then 
-        return b 
+    if varA <= varB and varA <= varC then
+        return a
+    elseif varB <= varC then
+        return b
     else
         return c
     end
 end
 
-local function filterType1(curPixel, lastPixel)
-    local lastByte
-    local newPixel = {}
-    for fieldName, curByte in pairs(curPixel) do
-        lastByte = lastPixel and lastPixel[fieldName] or 0
-        newPixel[fieldName] = (curByte + lastByte) % 256
-    end
-    return newPixel
-end
-
-local prevPixelRow = {}
-local function getPixelRow(stream, depth, colorType, palette, length)
-    local pixelRow = {}
-    local bpp = math.floor(depth/8) * bitFromColorType(colorType)
-    local bpl = bpp*length
-    local filterType = readByte(stream)
-
-    if filterType == 0 then
-        for x = 1, length do
-            pixelRow[x] = makePixel(stream, depth, colorType, palette)
+-- Apply PNG filter algorithms as explained at
+-- https://www.w3.org/TR/PNG-Filters.html
+local function applyFilter(filter_type, bpp, scanline_prev, scanline)
+    if filter_type == 0 then  -- None
+        return
+    elseif filter_type == 1 then  -- Sub
+        for x = 1, #scanline do
+            local byte_left = scanline[x - bpp] or 0
+            scanline[x] = (scanline[x] + byte_left) % 256
         end
-    elseif filterType == 1 then
-        local curPixel
-        local lastPixel
-        local newPixel
-        local lastByte
-        for x = 1, length do
-            curPixel = makePixel(stream, depth, colorType, palette)
-            lastPixel = prevPixelRow[pixelNum]
-            newPixel = {}
-            for fieldName, curByte in pairs(curPixel) do
-                lastByte = lastPixel and lastPixel[fieldName] or 0
-                newPixel[fieldName] = (curByte + lastByte) % 256
-            end
-            pixelRow[x] = newPixel
+    elseif filter_type == 2 then  -- Up
+        for x = 1, #scanline do
+            local byte_above = scanline_prev[x] or 0
+            scanline[x] = (scanline[x] + byte_above) % 256
+        end
+    elseif filter_type == 3 then  -- Average
+        for x = 1, #scanline do
+            local byte_left = scanline[x - bpp] or 0
+            local byte_above = scanline_prev[x] or 0
+            scanline[x] = (scanline[x]
+                + math.floor((byte_above + byte_left) / 2)) % 256
+        end
+    elseif filter_type == 4 then  -- Paeth
+        for x = 1, #scanline do
+            local byte_left = scanline[x - bpp] or 0
+            local byte_above = scanline_prev[x] or 0
+            local byte_above_left = scanline_prev[x - bpp] or 0
+            scanline[x] = (scanline[x]
+                + paethPredict(byte_left, byte_above, byte_above_left)) % 256
         end
     else
-        error("Unsupported filter type: " .. tostring(filterType))
+        error("Unknown filter type: " .. filter_type)
     end
-    prevPixelRow = pixelRow
+end
 
-    return pixelRow
+-- Convert raw scanline bits to pixels
+local function getPixelRow(scanline, depth, colour_type, palette)
+    -- Handle different bit depths
+    local flat_values = {}
+    if depth == 8 then
+        flat_values = scanline
+    elseif depth == 16 then
+        for x = 1, #scanline / 2 do
+            flat_values[x] = scanline[2 * x - 1] * 256 + scanline[2 * x]
+        end
+    else
+        -- depth < 8
+        local values_per_byte = 8 / depth
+        for i = 1, #scanline do
+            local packed = scanline[i]
+            for off = 1, values_per_byte do
+                local x = (i - 1) * values_per_byte + off
+                local rightshift = (off - 1) * depth
+                flat_values[x] = math.floor(packed / 2 ^ rightshift)
+                    % (2 ^ depth)
+            end
+        end
+    end
+
+    -- Handle colour types
+    local num_channels = bitFromColorType(colour_type)
+    local width = #flat_values / num_channels
+    local vmax = 2 ^ depth - 1
+    local pixel_row = {}
+    if colour_type == 0 then  -- greyscale
+        for x = 1, width do
+            local grey = flat_values[x]
+            pixel_row[x] = {R = grey, G = grey, B = grey, A = vmax}
+        end
+    elseif colour_type == 2 then  -- RGB
+        for x = 1, width do
+            local i = (x - 1) * 3 + 1
+            pixel_row[x] = {R = flat_values[i], G = flat_values[i + 1],
+                B = flat_values[i + 2], A = vmax}
+        end
+    elseif colour_type == 3 then  -- indexed
+        for x = 1, width do
+            local color = palette.colors[flat_values[x] + 1]
+            pixel_row[x] = {R = color.R, G = color.G, B = color.B, A = vmax}
+        end
+    elseif colour_type == 4 then  -- greyscale with alpha
+        for x = 1, width do
+            local i = (x - 1) * 2 + 1
+            local grey = flat_values[i]
+            local alpha = flat_values[i + 1]
+            pixel_row[x] = {R = grey, G = grey, B = grey, A = alpha}
+        end
+    else  -- colour_type == 6, RGBA
+        for x = 1, width do
+            local i = (x - 1) * 4 + 1
+            pixel_row[x] = {R = flat_values[i], G = flat_values[i + 1],
+                B = flat_values[i + 2], A = flat_values[i + 3]}
+        end
+    end
+
+    return pixel_row
+end
+
+local function getPixels(stream, width, height, depth, colour_type, palette,
+        prog_callback, pixels)
+    local scanline_bpp = math.ceil(depth / 8 * bitFromColorType(colour_type))
+    local scanline_len = math.ceil(depth / 8 * bitFromColorType(colour_type)
+        * width)
+    local scanline_prev = {}
+    for y = 1, height do
+        local filter_type = readByte(stream)
+        local scanline = stream:readBytes(scanline_len)
+        applyFilter(filter_type, scanline_bpp, scanline, scanline_prev)
+        scanline_prev = scanline
+        local pixel_row = getPixelRow(scanline, depth, colour_type, palette)
+        if prog_callback then
+            prog_callback(y, height, pixel_row)
+        end
+        if pixels then
+            pixels[y] = pixel_row
+        end
+    end
 end
 
 
@@ -245,7 +280,6 @@ local function pngImage(path, progCallback, verbose, memSave)
     local depth = 0
     local colorType = 0
     local output = {}
-    local pixels = {}
     local StringStream
     local function printV(msg)
         if (verbose) then
@@ -253,12 +287,15 @@ local function pngImage(path, progCallback, verbose, memSave)
         end
     end
 
-    if readChar(stream, 8) ~= "\137\080\078\071\013\010\026\010" then 
+    if readChar(stream, 8) ~= "\137\080\078\071\013\010\026\010" then
         error "Not a png"
     end
 
     printV("Parsing Chunks...")
     chunkData = extractChunkData(stream)
+    if chunkData.IHDR.interlace ~= 0 then
+        error("Interlacing is unsupported.")
+    end
 
     width = chunkData.IHDR.width
     height = chunkData.IHDR.height
@@ -267,10 +304,10 @@ local function pngImage(path, progCallback, verbose, memSave)
 
     printV("Deflating...")
     deflate.inflate_zlib {
-        input = chunkData.IDAT.data, 
-        output = function(byte) 
-            output[#output+1] = string.char(byte) 
-        end, 
+        input = chunkData.IDAT.data,
+        output = function(byte)
+            output[#output+1] = string.char(byte)
+        end,
         disable_crc = true
     }
     StringStream = {
@@ -279,19 +316,21 @@ local function pngImage(path, progCallback, verbose, memSave)
             local toreturn = self.str:sub(1, num)
             self.str = self.str:sub(num + 1, self.str:len())
             return toreturn
-        end  
+        end,
+        readBytes = function(self, num)
+            -- FIXME: str.byte has a big number of return values which are
+            -- unpacked into a table. How does this affect performance?
+            return {self:read(num):byte(1, num)}
+        end
     }
 
     printV("Creating pixelmap...")
-    for i = 1, height do
-        local pixelRow = getPixelRow(StringStream, depth, colorType, chunkData.PLTE, width)
-        if progCallback ~= nil then 
-            progCallback(i, height, pixelRow)
-        end
-        if not memSave then
-            pixels[i] = pixelRow
-        end
+    local pixels
+    if not memSave then
+        pixels = {}
     end
+    getPixels(StringStream, width, height, depth, colorType, chunkData.PLTE,
+        progCallback, pixels)
 
     printV("Done.")
     return {
@@ -299,7 +338,7 @@ local function pngImage(path, progCallback, verbose, memSave)
         height = height,
         depth = depth,
         colorType = colorType,
-        pixels = pixels
+        pixels = pixels or {}
     }
 end
 
