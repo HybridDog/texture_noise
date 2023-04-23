@@ -99,10 +99,51 @@ local function apply_lut(lut, v)
 	return lut[i]
 end
 
+-- Based on code from the deliot2019_openGLdemo
+-- (https://eheitzresearch.wordpress.com/738-2/)
+-- Compute local triangle barycentric coordinates and vertex IDs
+local function triangle_grid(uv, grid_scaling)
+	uv = {uv[1] * grid_scaling, uv[2] * grid_scaling}
+
+	-- Skew input space into simplex triangle grid
+	local skewed_coord = {uv[1], -0.57735027 * uv[1] + 1.15470054 * uv[2]}
+
+	-- Compute local triangle vertex IDs and local barycentric coordinates
+	local base_id = {math.floor(skewed_coord[1]), math.floor(skewed_coord[2])}
+	local temp = {skewed_coord[1] - base_id[1], skewed_coord[2] - base_id[2], 0}
+	temp[3] = 1.0 - temp[1] - temp[2]
+	if temp[3] > 0.0 then
+		return {temp[3], temp[2], temp[1]},
+			{
+				base_id,
+				{base_id[1], base_id[2] + 1},
+				{base_id[1] + 1, base_id[2]}
+			}
+	end
+	return {-temp[3], 1.0 - temp[2], 1.0 - temp[1]},
+		{
+			{base_id[1] + 1, base_id[2] + 1},
+			{base_id[1] + 1, base_id[2]},
+			{base_id[1], base_id[2] + 1}
+		}
+end
+
+-- Get a random offset vector at a triangle grid point
+-- TODO: do not save them in a table and never forget them; and allow seeds
+-- TODO: use pcgrandom
+local offsets = {}
+local function hash_vertex(pos)
+	local vi = (pos[2] + 32768) * 65536 + pos[1] + 32768
+	if not offsets[vi] then
+		offsets[vi] = {math.random(), math.random()}
+	end
+	return offsets[vi]
+end
+
 -- Nearest-neighbour sampling on an image with repeating border behaviour
-local function sample_img_nearest(img, pos)
-	local x = math.floor(pos[1]) % img.width
-	local y = math.floor(pos[2]) % img.height
+local function sample_img_nearest(img, uv)
+	local x = math.floor(uv[1] * img.width) % img.width
+	local y = math.floor(uv[2] * img.height) % img.height
 	return img.pixels[y * img.width + x + 1]
 end
 
@@ -110,9 +151,11 @@ end
 local TextureNoise = {}
 setmetatable(TextureNoise, {__call = function(_, path_image)
 	local lut_size = 256
+	local grid_scaling = 3.0
 	local obj = {
 		path_image = path_image,
 		lut_size = lut_size,
+		grid_scaling = grid_scaling,
 		initialised = false
 	}
 	setmetatable(obj, TextureNoise)
@@ -130,7 +173,23 @@ TextureNoise.__index = {
 		if not self.initialised then
 			self:_init()
 		end
-		return apply_lut(self.lut, sample_img_nearest(self.img, pos))
+		local uv = {pos[1] / self.img.width, pos[2] / self.img.height}
+		local weights, vertices = triangle_grid(uv, self.grid_scaling)
+		local samples = {}
+		for i = 1, 3 do
+			-- Translate the texture at each triangle point and get the gaussian
+			-- input
+			local off = hash_vertex(vertices[i])
+			local uv = {uv[1] + off[1], uv[2] + off[2]}
+			samples[i] = sample_img_nearest(self.img, uv)
+		end
+		-- Variance-preserving blending
+		local g = weights[1] * samples[1] + weights[2] * samples[2]
+			+ weights[3] * samples[3]
+		g = (g - 0.5) * 1.0 / math.sqrt(weights[1] * weights[1]
+			+ weights[2] * weights[2] + weights[3] * weights[3]) + 0.5
+		-- Inverse histogram transformation
+		return apply_lut(self.lut, g)
 	end,
 
 	sampleArea = function(self, pos1, pos2)
