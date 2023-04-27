@@ -4,8 +4,7 @@ local vips = require"vips"
 local argparse = require"argparse"
 -- Path to this file; FIXME: find a better way to determine it
 path_texture_noise = io.popen("pwd -P"):read("*a"):sub(1, -2)
-local TextureNoise = dofile(path_texture_noise ..
-	"/texture_noise.lua")
+local TextureNoise = dofile(path_texture_noise .. "/texture_noise.lua")
 
 local function parse_args()
 	local parser = argparse(){
@@ -13,6 +12,24 @@ local function parse_args()
 	}
 	parser:argument("input", "Input image")
 	parser:argument("output", "Output image")
+	parser:argument{
+		name = "grid-scaling",
+		description = "Scaling of the triangle grid",
+		convert = tonumber
+	}
+	parser:argument{
+		name = "interpolation",
+		description = "Interpolation of the gaussianised texture",
+		choices = {"nearest", "linear"}
+	}
+	parser:option{
+		name = "--transform",
+		description = "Row-major 2x2 transformation matrix elements for the " ..
+			"sample position transformation",
+		args = 4,
+		convert = {tonumber, tonumber, tonumber, tonumber},
+		default = {1, 0, 0, 1}
+	}
 	parser:option{
 		name = "--width",
 		description = "Output image width",
@@ -25,12 +42,6 @@ local function parse_args()
 		default = 500,
 		convert = tonumber
 	}
-
-	--~ parser:argument{
-		--~ name = "grid-scaling",
-		--~ description = "Scaling of the triangle grid",
-		--~ convert = tonumber
-	--~ }
 	return parser:parse()
 end
 
@@ -59,8 +70,13 @@ end
 
 local function main()
 	local args = parse_args()
-	local tn = TextureNoise(args.input)
-	local values = tn:sampleArea({0, 0}, {args.width - 1, args.height - 1})
+	local tn = TextureNoise{
+		path_image = args.input,
+		grid_scaling = args["grid-scaling"],
+		interpolation = args.interpolation
+	}
+	local values = tn:sampleArea({0, 0}, {args.width - 1, args.height - 1},
+		args.transform)
 
 	-- Dummy, save with vips
 	img = data_to_image(values, args.width)

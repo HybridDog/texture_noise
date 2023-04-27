@@ -140,30 +140,56 @@ local function hash_vertex(pos)
 	return offsets[vi]
 end
 
--- Nearest-neighbour sampling on an image with repeating border behaviour
-local function sample_img_nearest(img, uv)
-	local x = math.floor(uv[1] * img.width) % img.width
-	local y = math.floor(uv[2] * img.height) % img.height
-	return img.pixels[y * img.width + x + 1]
-end
+-- The sampling functions here all use the repeat border behaviour,
+-- i.e. out-of-bounds pixel positions are mapped to the opposite side of the
+-- image so that it tiles.
+-- The sampling of the 1D lookup table is different.
+local sampling_functions = {
+	-- Nearest-neighbour sampling of an image
+	nearest = function(img, uv)
+		local x = math.floor(uv[1] * img.width) % img.width
+		local y = math.floor(uv[2] * img.height) % img.height
+		return img.pixels[y * img.width + x + 1]
+	end,
 
+	-- Sampling with linear interpolation
+	linear = function(img, uv)
+		local w, h = img.width, img.height
+		local x = uv[1] * w
+		local y = uv[2] * h
+		local x_floor = math.floor(x)
+		local y_floor = math.floor(y)
+		local cx = x - x_floor
+		local cy = y - y_floor
+		local x0 = x_floor % w
+		local y0 = y_floor % h
+		local x1 = (x0 + 1) % w
+		local y1 = (y0 + 1) % h
+		return (1.0 - cx) * (1.0 - cy) * img.pixels[y0 * w + x0 + 1]
+			+ cx * (1.0 - cy) * img.pixels[y0 * w + x1 + 1]
+			+ (1.0 - cx) * cy * img.pixels[y1 * w + x0 + 1]
+			+ cx * cy * img.pixels[y1 * w + x1 + 1]
+	end
+}
 
 local TextureNoise = {}
-setmetatable(TextureNoise, {__call = function(_, path_image)
-	local lut_size = 256
-	local grid_scaling = 3.0
+setmetatable(TextureNoise, {__call = function(_, args)
 	local obj = {
-		path_image = path_image,
-		lut_size = lut_size,
-		grid_scaling = grid_scaling,
+		path_image = args.path_image,
+		grid_scaling = args.grid_scaling,
+		lut_size = args.lut_size or 256,
 		initialised = false
 	}
+	obj.sample_img = sampling_functions[args.interpolation]
+	if not obj.sample_img then
+		error(("Unsupported interpolation mode: %s"):format(args.interpolation))
+	end
 	setmetatable(obj, TextureNoise)
 	return obj
 end})
 TextureNoise.__index = {
 	-- Used for lazy initialisation
-	_init = function(self)
+	init = function(self)
 		self.img = load_image(self.path_image)
 		self.lut = histogram_transform(self.img.pixels, self.lut_size)
 		self.initialised = true
@@ -171,7 +197,7 @@ TextureNoise.__index = {
 
 	sample = function(self, pos)
 		if not self.initialised then
-			self:_init()
+			self:init()
 		end
 		local uv = {pos[1] / self.img.width, pos[2] / self.img.height}
 		local weights, vertices = triangle_grid(uv, self.grid_scaling)
@@ -180,8 +206,8 @@ TextureNoise.__index = {
 			-- Translate the texture at each triangle point and get the gaussian
 			-- input
 			local off = hash_vertex(vertices[i])
-			local uv = {uv[1] + off[1], uv[2] + off[2]}
-			samples[i] = sample_img_nearest(self.img, uv)
+			samples[i] = self.sample_img(self.img,
+				{uv[1] + off[1], uv[2] + off[2]})
 		end
 		-- Variance-preserving blending
 		local g = weights[1] * samples[1] + weights[2] * samples[2]
@@ -192,15 +218,20 @@ TextureNoise.__index = {
 		return apply_lut(self.lut, g)
 	end,
 
-	sampleArea = function(self, pos1, pos2)
+	sampleArea = function(self, pos1, pos2, transformation)
+		-- Set the transformation to identity if it is omitted
+		transformation = transformation or {1, 0, 0, 1}
 		if not self.initialised then
-			self:_init()
+			self:init()
 		end
 		local values = {}
 		local vi = 1
 		for y = pos1[2], pos2[2] do
 			for x = pos1[1], pos2[1] do
-				values[vi] = self:sample({x, y})
+				-- transformation is row-major
+				local xt = transformation[1] * x + transformation[2] * y
+				local yt = transformation[3] * x + transformation[4] * y
+				values[vi] = self:sample({xt, yt})
 				vi = vi+1
 			end
 		end
