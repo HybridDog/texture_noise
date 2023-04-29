@@ -4,7 +4,7 @@ local vips = require"vips"
 local argparse = require"argparse"
 -- Path to this file; FIXME: find a better way to determine it
 path_texture_noise = io.popen("pwd -P"):read("*a"):sub(1, -2)
-local TextureNoise = dofile(path_texture_noise .. "/texture_noise.lua")
+local texture_noise = dofile(path_texture_noise .. "/texture_noise.lua")
 
 local function parse_args()
 	local parser = argparse(){
@@ -20,11 +20,12 @@ local function parse_args()
 	parser:argument{
 		name = "interpolation",
 		description = "Interpolation of the gaussianised texture",
-		choices = {"nearest", "linear"}
+		choices = {"nearest", "linear", "smoothstep", "quintic"}
 	}
 	parser:option{
 		name = "--transform",
-		description = "Row-major 2x2 transformation matrix elements for the " ..
+		description = "Only without --stack. " ..
+			"Row-major 2x2 transformation matrix elements for the " ..
 			"sample position transformation",
 		args = 4,
 		convert = {tonumber, tonumber, tonumber, tonumber},
@@ -40,6 +41,37 @@ local function parse_args()
 		name = "--height",
 		description = "Output image height",
 		default = 500,
+		convert = tonumber
+	}
+	parser:flag{
+		name = "--stack",
+		description = "Use a stacked noise",
+	}
+	parser:option{
+		name = "--octaves",
+		description = "Only with --stack. Number of entries in the noise stack",
+		default = 3,
+		convert = tonumber
+	}
+	parser:option{
+		name = "--spread",
+		description = "Only with --stack. 'wavelength' of the "
+			.. "lowest-frequency stack entry",
+		default = 16,
+		convert = tonumber
+	}
+	parser:option{
+		name = "--persistence",
+		description = "Only with --stack. Amplitude reduction factor per " ..
+			"stack entry",
+		default = 0.5,
+		convert = tonumber
+	}
+	parser:option{
+		name = "--lacunarity",
+		description = "Only with --stack. Inverse of the 'wavelength' " ..
+			"reduction factor per stack entry",
+		default = 2.0,
 		convert = tonumber
 	}
 	return parser:parse()
@@ -70,16 +102,29 @@ end
 
 local function main()
 	local args = parse_args()
-	local tn = TextureNoise{
+	local texture_noise_params = {
 		path_image = args.input,
 		grid_scaling = args["grid-scaling"],
 		interpolation = args.interpolation
 	}
-	local values = tn:sampleArea({0, 0}, {args.width - 1, args.height - 1},
-		args.transform)
+	local values
+	if args.stack then
+		local tn = texture_noise.NoiseStacked{
+			texture_noise_params = texture_noise_params,
+			octaves = args.octaves,
+			spread = args.spread,
+			persistence = args.persistence,
+			lacunarity = args.lacunarity,
+		}
+		values = tn:sampleArea({0, 0}, {args.width - 1, args.height - 1})
+	else
+		local tn = texture_noise.Noise(texture_noise_params)
+		values = tn:sampleArea({0, 0}, {args.width - 1, args.height - 1},
+			args.transform)
+	end
 
 	-- Dummy, save with vips
-	img = data_to_image(values, args.width)
+	local img = data_to_image(values, args.width)
 	img:write_to_file(args.output .. "[bitdepth=16]")
 end
 

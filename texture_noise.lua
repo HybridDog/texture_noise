@@ -91,12 +91,29 @@ local function histogram_transform(values, lut_size)
 	return lut
 end
 
-local function apply_lut(lut, v)
-	-- TODO: interpolation option for the LUT
+-- Sample the lookup table without interpolation
+local function sample_lut_nearest(lut, v)
 	local lut_size = #lut
 	local i = math.floor(v * lut_size) + 1
 	i = math.max(1, math.min(i, lut_size))
 	return lut[i]
+end
+
+-- Sample the lookup table with linear interpolation
+local function sample_lut_linear(lut, v)
+	if v <= 0.0 then
+		return lut[1]
+	end
+	local lut_size = #lut
+	if v >= 1.0 then
+		return lut[lut_size]
+	end
+	-- lut_size - 1 because the first and last value have half the probability
+	-- of being used if v is uniformly distributed in [0, 1]
+	local x = v * (lut_size - 1)
+	local x_floor = math.floor(x)
+	local cx = x - x_floor
+	return (1.0 - cx) * lut[x_floor + 1] + cx * lut[x_floor + 2]
 end
 
 -- Based on code from the deliot2019_openGLdemo
@@ -140,6 +157,14 @@ local function hash_vertex(pos)
 	return offsets[vi]
 end
 
+local function smoothstep(x)
+	return (3.0 - 2.0 * x) * x * x
+end
+
+local function quintic(x)
+	return (10.0 + (-15.0 + 6.0 * x) * x) * x * x * x
+end
+
 -- The sampling functions here all use the repeat border behaviour,
 -- i.e. out-of-bounds pixel positions are mapped to the opposite side of the
 -- image so that it tiles.
@@ -169,6 +194,44 @@ local sampling_functions = {
 			+ cx * (1.0 - cy) * img.pixels[y0 * w + x1 + 1]
 			+ (1.0 - cx) * cy * img.pixels[y1 * w + x0 + 1]
 			+ cx * cy * img.pixels[y1 * w + x1 + 1]
+	end,
+
+	-- Sampling with smoothstep interpolation
+	smoothstep = function(img, uv)
+		local w, h = img.width, img.height
+		local x = uv[1] * w
+		local y = uv[2] * h
+		local x_floor = math.floor(x)
+		local y_floor = math.floor(y)
+		local cx = smoothstep(x - x_floor)
+		local cy = smoothstep(y - y_floor)
+		local x0 = x_floor % w
+		local y0 = y_floor % h
+		local x1 = (x0 + 1) % w
+		local y1 = (y0 + 1) % h
+		return (1.0 - cx) * (1.0 - cy) * img.pixels[y0 * w + x0 + 1]
+			+ cx * (1.0 - cy) * img.pixels[y0 * w + x1 + 1]
+			+ (1.0 - cx) * cy * img.pixels[y1 * w + x0 + 1]
+			+ cx * cy * img.pixels[y1 * w + x1 + 1]
+	end,
+
+	-- Sampling with quintic interpolation
+	quintic = function(img, uv)
+		local w, h = img.width, img.height
+		local x = uv[1] * w
+		local y = uv[2] * h
+		local x_floor = math.floor(x)
+		local y_floor = math.floor(y)
+		local cx = quintic(x - x_floor)
+		local cy = quintic(y - y_floor)
+		local x0 = x_floor % w
+		local y0 = y_floor % h
+		local x1 = (x0 + 1) % w
+		local y1 = (y0 + 1) % h
+		return (1.0 - cx) * (1.0 - cy) * img.pixels[y0 * w + x0 + 1]
+			+ cx * (1.0 - cy) * img.pixels[y0 * w + x1 + 1]
+			+ (1.0 - cx) * cy * img.pixels[y1 * w + x0 + 1]
+			+ cx * cy * img.pixels[y1 * w + x1 + 1]
 	end
 }
 
@@ -183,6 +246,11 @@ setmetatable(TextureNoise, {__call = function(_, args)
 	obj.sample_img = sampling_functions[args.interpolation]
 	if not obj.sample_img then
 		error(("Unsupported interpolation mode: %s"):format(args.interpolation))
+	end
+	if args.lut_interpolation == "nearest" then
+		obj.apply_lut = sample_lut_nearest
+	else
+		obj.apply_lut = sample_lut_linear
 	end
 	setmetatable(obj, TextureNoise)
 	return obj
@@ -215,7 +283,7 @@ TextureNoise.__index = {
 		g = (g - 0.5) * 1.0 / math.sqrt(weights[1] * weights[1]
 			+ weights[2] * weights[2] + weights[3] * weights[3]) + 0.5
 		-- Inverse histogram transformation
-		return apply_lut(self.lut, g)
+		return self.apply_lut(self.lut, g)
 	end,
 
 	sampleArea = function(self, pos1, pos2, transformation)
@@ -239,4 +307,60 @@ TextureNoise.__index = {
 	end,
 }
 
-return TextureNoise
+local TextureNoiseStacked = {}
+setmetatable(TextureNoiseStacked, {__call = function(_, args)
+	local component_amplitudes = {}
+	local component_spreads = {}
+	local c_acc = 0.0
+	for i = 1, args.octaves do
+		local c = args.persistence ^ (i - 1)
+		c_acc = c_acc + c
+		component_amplitudes[i] = c
+		component_spreads[i] = args.spread * args.lacunarity ^ (1 - i)
+	end
+	for i = 1, args.octaves do
+		component_amplitudes[i] = component_amplitudes[i] / c_acc
+	end
+	local obj = {
+		noise = TextureNoise(args.texture_noise_params),
+		seed = args.seed,
+		component_amplitudes = component_amplitudes,
+		component_spreads = component_spreads,
+	}
+	setmetatable(obj, TextureNoiseStacked)
+	return obj
+end})
+TextureNoiseStacked.__index = {
+	sampleArea = function(self, pos1, pos2)
+		local values_sum = {}
+		for k = 1, (pos2[2] - pos1[2] + 1) * (pos2[1] - pos1[1] + 1) do
+			values_sum[k] = 0.0
+		end
+		for i = 1, #self.component_amplitudes do
+			local scale_value = self.component_amplitudes[i]
+			local scale_space = self.component_spreads[i]
+			local transformation = {1.0 / scale_space, 0, 0, 1.0 / scale_space}
+			local values = self.noise:sampleArea(pos1, pos2, transformation)
+			for k = 1, #values_sum do
+				values_sum[k] = values_sum[k] + scale_value * values[k]
+			end
+		end
+		return values_sum
+	end,
+
+	sample = function(self, pos)
+		local value_sum = 0.0
+		for i = 1, #self.component_amplitudes do
+			local scale_value = self.component_amplitudes[i]
+			local scale_space = self.component_spreads[i]
+			local p = {pos[1] / scale_space, pos[2] / scale_space}
+			value_sum = value_sum + scale_value * self.noise:sample(p)
+		end
+		return value_sum
+	end
+}
+
+return {
+	Noise = TextureNoise,
+	NoiseStacked = TextureNoiseStacked
+}
