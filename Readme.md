@@ -73,6 +73,7 @@ the following fields:
   Note that the interpolation is done on the gaussianised texture,
   so the `"linear"` interpolation does not lead to linear slopes because the
   inverse histogram transformation is applied after the interpolation.
+* `seed`: PRNG seed for the triange grid vertex hashing
 * `lut_size`: Number of elements in the lookup table.
   Optional; defaults to `256`.
   For certain images, such as a few bright stars on a large black background,
@@ -153,10 +154,6 @@ The meanings of many parameters here are explained in detail at
 
 # TODO
 
-* Fix hashing
-  * If available, use Minetest's pcgrandom
-  * Do not save grid point hashes forever
-  * Support seed
 * More options for interpolation of the gaussianized texture:
   cubic (with parameters), perhaps mpv's spline36.
   Perhaps option for the interpolation of the LUT
@@ -166,6 +163,11 @@ The meanings of many parameters here are explained in detail at
 * Investigation of limitations due to quantisation; are 8-bit textures
   sufficient for heightmaps with this algorithm or not?
 * If available, use Minetest's deflate in PNG decoding for performance
+* Check if modlib's PNG decoder (https://github.com/appgurueu/modlib/blob/master/minetest/png.lua) or the current png_loader are more suitable for `texture_noise`, e.g. which one is faster.
 * Test if png-lua works correctly with 16-bit images, i.e. does not quantize
   away stuff
 * Code cleanup and practical application
+* Add a simple tiling variant where it's just usual texture sampling with
+  repetition
+* In NoiseStacked, use a different seed for each octave. Currently all use the
+  same seed, which probably leads to artifacts near zero.

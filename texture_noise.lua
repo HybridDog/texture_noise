@@ -145,16 +145,39 @@ local function triangle_grid(uv, grid_scaling)
 		}
 end
 
--- Get a random offset vector at a triangle grid point
--- TODO: do not save them in a table and never forget them; and allow seeds
--- TODO: use pcgrandom
-local offsets = {}
-local function hash_vertex(pos)
-	local vi = (pos[2] + 32768) * 65536 + pos[1] + 32768
-	if not offsets[vi] then
-		offsets[vi] = {math.random(), math.random()}
+-- Get a random offset vector at a triangle grid point.
+-- The offset is in [0, 1]^2
+local hash_vertex
+if _G.PcgRandom then
+	local vertex_hash_cache = {}
+	function hash_vertex(pos, seed)
+		if not vertex_hash_cache[seed] then
+			vertex_hash_cache[seed] = {}
+			setmetatable(vertex_hash_cache[seed], {__mode = "kv"})
+		end
+		local vi = (pos[2] + 32768) * 65536 + pos[1] + 32768
+		if vertex_hash_cache[seed][vi] then
+			return vertex_hash_cache[seed][vi]
+		end
+		-- FIXME: is there a better way to use both `vi` and `seed` as a seed?
+		local seed_gen = PcgRandom(seed):next() + 2 ^ 31
+		local prng = PcgRandom(seed_gen + vi)
+		local offset = {(prng:next() + 2 ^ 31) / 2 ^ 32,
+			(prng:next() + 2 ^ 31) / 2 ^ 32}
+		vertex_hash_cache[seed][vi] = offset
+		return offset
 	end
-	return offsets[vi]
+else
+	print("PcgRandom from Minetest is unavailable. " ..
+		"Using a workaround with math.random which ignores seed.")
+	local offsets = {}
+	function hash_vertex(pos, _)
+		local vi = (pos[2] + 32768) * 65536 + pos[1] + 32768
+		if not offsets[vi] then
+			offsets[vi] = {math.random(), math.random()}
+		end
+		return offsets[vi]
+	end
 end
 
 local function smoothstep(x)
@@ -237,9 +260,17 @@ local sampling_functions = {
 
 local TextureNoise = {}
 setmetatable(TextureNoise, {__call = function(_, args)
+	local required_args = {"path_image", "grid_scaling", "seed",
+		"interpolation"}
+	for i = 1, #required_args do
+		if args[required_args[i]] == nil then
+			error("Missing argument: " .. required_args[i])
+		end
+	end
 	local obj = {
 		path_image = args.path_image,
 		grid_scaling = args.grid_scaling,
+		seed = args.seed,
 		lut_size = args.lut_size or 256,
 		initialised = false
 	}
@@ -273,7 +304,7 @@ TextureNoise.__index = {
 		for i = 1, 3 do
 			-- Translate the texture at each triangle point and get the gaussian
 			-- input
-			local off = hash_vertex(vertices[i])
+			local off = hash_vertex(vertices[i], self.seed)
 			samples[i] = self.sample_img(self.img,
 				{uv[1] + off[1], uv[2] + off[2]})
 		end
@@ -309,6 +340,13 @@ TextureNoise.__index = {
 
 local TextureNoiseStacked = {}
 setmetatable(TextureNoiseStacked, {__call = function(_, args)
+	local required_args = {"texture_noise_params", "octaves", "spread",
+		"lacunarity", "persistence"}
+	for i = 1, #required_args do
+		if args[required_args[i]] == nil then
+			error("Missing argument: " .. required_args[i])
+		end
+	end
 	local component_amplitudes = {}
 	local component_spreads = {}
 	local c_acc = 0.0
