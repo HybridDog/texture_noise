@@ -154,6 +154,8 @@ The meanings of many parameters here are explained in detail at
 
 # TODO
 
+* Explain mirroring. Due to Minetest's coordinate system, the texture may
+  be mirrored when generating the noise.
 * More options for interpolation of the gaussianized texture:
   cubic (with parameters), perhaps mpv's spline36.
   Perhaps option for the interpolation of the LUT
