@@ -1,5 +1,6 @@
-local load_image = dofile(path_texture_noise ..
-	"/image_loading/image_loading.lua")
+local path_image_loading = (...).path .. "/image_loading"
+local load_image = assert(loadfile(
+	path_image_loading .. "/image_loading.lua"){path = path_image_loading})
 
 local cdf, inv_cdf
 do

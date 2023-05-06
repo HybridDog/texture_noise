@@ -19,10 +19,7 @@
 -- IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 -- CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-assert(path_texture_noise, "A global \"path_texture_noise\" " ..
-	"variable has to be specified for the require and dofile functions.")
-local deflate = dofile(path_texture_noise ..
-    "/image_loading/png-lua/deflatelua.lua")
+local deflate = dofile((...).path .. "/deflatelua.lua")
 local requiredDeflateVersion = "0.3.20111128"
 
 if (deflate._VERSION ~= requiredDeflateVersion) then

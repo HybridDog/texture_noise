@@ -3,22 +3,22 @@
 
 To use this in a lua program inside a git repository, I recommend to add the files with git subtree, for example:
 ```sh
-git subtree add --squash --prefix=texture_noise git@github.com:HybridDog/texture_noise.git
+git subtree add --squash --prefix=texture_noise git@github.com:HybridDog/texture_noise.git master
 ```
 You may need to change the prefix to some subdirectory, or change the datastructures repository url if you want to use some fork of this repository.
 After adding the subtree and assuming that the greyscale image `example_heightmap.png` exists, we can use, for example, the `texture_noise.Noise` class in a Lua file:
 ```Lua
 local path = […]
--- The `path_texture_noise` global variable has to be set so that
--- `texture_noise.lua` can load other files, e.g. the PNG decoder.
-path_texture_noise = path .. "/texture_noise"
-local texture_noise = dofile(path_texture_noise .. "/texture_noise.lua")
+local path_texture_noise = path .. "/texture_noise"
+local texture_noise = assert(loadfile(
+	path_texture_noise .. "/texture_noise.lua"){path = path_texture_noise})
 
 -- Create an object for sampling the procedural noise
 local tn = texture_noise.Noise{
 	path_image = path .. "/example_heightmap.png",
 	grid_scaling = 3.0,
-	interpolation = "linear"
+	interpolation = "linear",
+	seed = 31556925,
 }
 
 function myfunc()
@@ -94,14 +94,17 @@ time takes longer than the following times.
 * `sampleArea(pos1, pos2[, transformation])`: Sample the noise at multiple
   positions.
   `pos1` and `pos2` are two-element arrays, e.g. `{4, 51}`, and define a grid
-  of sample positions.
+  of sample positions:
+  `{pos1[1], pos1[1] + 1, ..., pos2[1]} x {pos1[2], pos1[2] + 1, ..., pos2[2]}`.
   `transformation` is a 2x2 position transformation matrix encoded
   row-major in a flat array and defaults to the identity matrix.
   With this argument, it is possible to sample the noise with a
   scale, rotation, mirroring and shear; for example, `{0.5, 0, 0, 0.5}` makes
   the noise twice as large.
   The return value of this method is a flat array which begins at index `1` and
-  has the noise samples in raster scan order; all values are within `[0, 1]`.
+  has the noise samples in row-major order; all values are within `[0, 1]`.
+  If available, Minetest's `VoxelArea` can be used for the index calculation:
+  `local area = VoxelArea(vector.new(pos1[1], pos1[2], 0), vector.new(pos2[1], pos2[2], 0))`.
 * `sample(pos)`: Sample the noise at the position `pos`.
   The return value is a number in `[0, 1]`.
 
@@ -146,10 +149,8 @@ The meanings of many parameters here are explained in detail at
 ### Methods
 
 * `sampleArea(pos1, pos2)`: Sample the stacked noise at multiple positions.
-  `pos1` and `pos2` are two-element arrays, e.g. `{4, 51}`, and define a grid
-  of sample positions.
-  The return value of this method is a flat array which begins at index `1` and
-  has the noise samples in raster scan order; all values are within `[0, 1]`.
+  See the `texture_noise.Noise` `sampleArea` definition for a meaning of the
+  arguments and return value.
 
 
 # TODO

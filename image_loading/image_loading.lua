@@ -1,7 +1,8 @@
 -- Abstraction of opening image files
-assert(path_texture_noise, "A global \"path_texture_noise\" " ..
-	"variable has to be specified for the require and dofile functions.")
-local pngImage = dofile(path_texture_noise .. "/image_loading/png-lua/png.lua")
+
+local path_png_lua = (...).path .. "/png-lua"
+local pngImage = assert(
+	loadfile(path_png_lua .. "/png.lua"){path = path_png_lua})
 
 -- https://www.w3.org/TR/PNG-Chunks.html
 local png_color_type = {[0] = "greyscale", nil, "RGB", "indexed",

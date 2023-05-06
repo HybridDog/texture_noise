@@ -3,8 +3,9 @@
 local vips = require"vips"
 local argparse = require"argparse"
 -- Path to this file; FIXME: find a better way to determine it
-path_texture_noise = io.popen("pwd -P"):read("*a"):sub(1, -2)
-local texture_noise = dofile(path_texture_noise .. "/texture_noise.lua")
+local path_texture_noise = io.popen("pwd -P"):read("*a"):sub(1, -2)
+local texture_noise = assert(loadfile(
+	path_texture_noise .. "/texture_noise.lua"){path = path_texture_noise})
 
 local function parse_args()
 	local parser = argparse(){
@@ -105,7 +106,8 @@ local function main()
 	local texture_noise_params = {
 		path_image = args.input,
 		grid_scaling = args["grid-scaling"],
-		interpolation = args.interpolation
+		interpolation = args.interpolation,
+		seed = 0
 	}
 	local values
 	if args.stack then
